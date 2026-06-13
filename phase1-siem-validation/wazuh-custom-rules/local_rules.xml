@@ -1,0 +1,248 @@
+<!--
+  CLOUD SECURITY PROJECT - Custom Wazuh Rules
+  File location on Wazuh Server: /var/ossec/etc/rules/local_rules.xml
+  
+  These rules enhance detection for the project testing scenarios:
+  - Suricata integration alerts
+  - SSH brute force (enhanced)
+  - Web application attacks (Log4j, Shellshock, SQLi, XSS)
+  - Reverse shell detection
+  - Port scanning patterns
+  
+  After adding these rules, restart Wazuh:
+    sudo systemctl restart wazuh-manager
+-->
+
+<group name="local,project,">
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100001: Suricata Alert Integration                                -->
+  <!-- Fires when Suricata reports an alert that Wazuh agent forwards        -->
+  <!-- ====================================================================== -->
+  <rule id="100001" level="6">
+    <decoded_as>json</decoded_as>
+    <field name="event_type">^alert$</field>
+    <description>Suricata IDS Alert: $(alert.signature)</description>
+    <group>suricata,ids,network,</group>
+  </rule>
+
+  <rule id="100002" level="8">
+    <if_sid>100001</if_sid>
+    <field name="alert.category">^Attempted Administrator Privilege Gain</field>
+    <description>Suricata: High-severity exploit attempt - $(alert.signature)</description>
+    <group>suricata,ids,exploit,gdpr_iv_35.7.d,</group>
+  </rule>
+
+  <rule id="100003" level="7">
+    <if_sid>100001</if_sid>
+    <field name="alert.category">^Attempted User Privilege Gain</field>
+    <description>Suricata: Privilege escalation attempt - $(alert.signature)</description>
+    <group>suricata,ids,privilege_escalation,</group>
+  </rule>
+
+  <rule id="100004" level="6">
+    <if_sid>100001</if_sid>
+    <field name="alert.category">^Network Scan</field>
+    <description>Suricata: Network scanning detected - $(alert.signature)</description>
+    <group>suricata,ids,recon,scan,</group>
+  </rule>
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100010-100019: Enhanced Port Scan Detection                       -->
+  <!-- ====================================================================== -->
+  <rule id="100010" level="3">
+    <if_sid>100004</if_sid>
+    <field name="alert.signature">^ET SCAN</field>
+    <description>Suricata: ET Port/Network Scan detected</description>
+    <group>suricata,scan,recon,</group>
+  </rule>
+
+  <rule id="100011" level="6">
+    <if_sid>100010</if_sid>
+    <field name="alert.signature">NMAP</field>
+    <description>Suricata: Nmap scan detected from $(src_ip) to $(dest_ip):$(dest_port)</description>
+    <mitre>
+      <id>T1046</id>
+    </mitre>
+    <group>suricata,scan,nmap,recon,</group>
+  </rule>
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100020-100039: SSH Brute Force (Enhanced)                         -->
+  <!-- ====================================================================== -->
+  <rule id="100020" level="10" frequency="8" timeframe="120">
+    <if_matched_sid>5710</if_matched_sid>
+    <same_source_ip />
+    <description>Multiple failed SSH logins from $(srcip) - Possible brute force attack</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_failures,sshd,brute_force,</group>
+  </rule>
+
+  <rule id="100021" level="12" frequency="12" timeframe="120">
+    <if_matched_sid>5712</if_matched_sid>
+    <same_source_ip />
+    <description>SSH Brute Force attack SUCCESSFULLY BLOCKED from $(srcip)</description>
+    <mitre>
+      <id>T1110.001</id>
+    </mitre>
+    <group>authentication_failures,sshd,brute_force,</group>
+  </rule>
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100040-100059: Web Application Attack Detection                   -->
+  <!-- ====================================================================== -->
+  
+  <!-- Log4j / Log4Shell Detection -->
+  <rule id="100040" level="13">
+    <if_sid>31100</if_sid>
+    <match>jndi:|jndi:ldap|jndi:ldaps|jndi:rmi|jndi:dns|$\{|\$\$\{|\%24\%7B</match>
+    <description>CRITICAL: Possible Log4Shell (CVE-2021-44228) exploit attempt detected!</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web,accesslog,attack,log4j,cve_2021_44228,</group>
+  </rule>
+
+  <rule id="100041" level="13">
+    <if_sid>31100</if_sid>
+    <match>\$\{|jndi:</match>
+    <field name="http_user_agent">\$\{|jndi:</field>
+    <description>CRITICAL: Log4Shell via User-Agent header from $(srcip)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web,accesslog,attack,log4j,cve_2021_44228,</group>
+  </rule>
+
+  <!-- Shellshock Detection -->
+  <rule id="100042" level="12">
+    <if_sid>31100</if_sid>
+    <match>\(\) \{ :; \};| \(\) { _; } >_\[$$\(\$0\)\]</match>
+    <description>CRITICAL: Possible Shellshock (CVE-2014-6271) exploit attempt!</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1068</id>
+    </mitre>
+    <group>web,accesslog,attack,shellshock,cve_2014_6271,</group>
+  </rule>
+
+  <!-- SQL Injection Detection -->
+  <rule id="100043" level="8">
+    <if_sid>31100</if_sid>
+    <match>union select|union all select|insert into|delete from|drop table|exec\(|eval\(|system\(</match>
+    <description>Possible SQL Injection attempt from $(srcip): $(extra_data)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web,accesslog,attack,sqli,</group>
+  </rule>
+
+  <!-- XSS Detection -->
+  <rule id="100044" level="7">
+    <if_sid>31100</if_sid>
+    <match><script|<iframe|javascript:|onerror=|onload=|alert\(|prompt\(|confirm\(</match>
+    <description>Possible XSS attempt from $(srcip)</description>
+    <mitre>
+      <id>T1189</id>
+    </mitre>
+    <group>web,accesslog,attack,xss,</group>
+  </rule>
+
+  <!-- Path Traversal / LFI -->
+  <rule id="100045" level="7">
+    <if_sid>31100</if_sid>
+    <match>\.\./|\.\.\\|%2e%2e%2f|%252e%252e%252f|..%2f..%2f|/etc/passwd|/etc/shadow|boot.ini</match>
+    <description>Path Traversal / LFI attempt from $(srcip): $(extra_data)</description>
+    <mitre>
+      <id>T1083</id>
+    </mitre>
+    <group>web,accesslog,attack,lfi,path_traversal,</group>
+  </rule>
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100060-100079: Reverse Shell & Command Execution                  -->
+  <!-- ====================================================================== -->
+  <rule id="100060" level="13">
+    <if_sid>100001</if_sid>
+    <field name="alert.signature">reverse|reverse shell|cmd.exe|/bin/bash -i|/bin/sh -i|nc -e|python -c 'import socket'</field>
+    <description>CRITICAL: Possible reverse shell command detected - $(alert.signature)</description>
+    <mitre>
+      <id>T1059</id>
+      <id>T1071</id>
+    </mitre>
+    <group>suricata,ids,reverse_shell,command_execution,</group>
+  </rule>
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100080-100099: Windows-Specific Detection                         -->
+  <!-- ====================================================================== -->
+  <rule id="100080" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4625$</field>
+    <description>Windows: Multiple failed logon attempts detected</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>windows,authentication_failures,brute_force,</group>
+  </rule>
+
+  <rule id="100081" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4648$</field>
+    <match>explicit credentials</match>
+    <description>Windows: Explicit credential logon attempt (possible Pass-the-Hash)</description>
+    <mitre>
+      <id>T1550</id>
+    </mitre>
+    <group>windows,lateral_movement,</group>
+  </rule>
+
+  <!-- ====================================================================== -->
+  <!-- RULE 100100+: Severity Correlation Rules                               -->
+  <!-- ====================================================================== -->
+  
+  <!-- Multiple attack types from same source -->
+  <rule id="100100" level="14" frequency="5" timeframe="300">
+    <if_matched_sid>100001</if_matched_sid>
+    <same_source_ip />
+    <description>CRITICAL: Multiple Suricata alerts from $(srcip) - Possible coordinated attack</description>
+    <mitre>
+      <id>T1595</id>
+    </mitre>
+    <group>suricata,ids,correlation,coordinated_attack,</group>
+  </rule>
+
+  <!-- Port scan followed by brute force -->
+  <rule id="100101" level="14" frequency="2" timeframe="600">
+    <if_matched_sid>100011</if_matched_sid>
+    <if_matched_sid>100020</if_matched_sid>
+    <same_source_ip />
+    <description>CRITICAL: Reconnaissance (port scan) followed by brute force from $(srcip) - Full attack chain detected!</description>
+    <mitre>
+      <id>T1595</id>
+      <id>T1110</id>
+    </mitre>
+    <group>attack_chain,recon,brute_force,</group>
+  </rule>
+
+</group>
+
+<!--
+  TESTING THE RULES:
+  1. Copy to /var/ossec/etc/rules/local_rules.xml
+  2. Restart Wazuh: sudo systemctl restart wazuh-manager
+  3. Check rules loaded: sudo /var/ossec/bin/wazuh-analysisd -t
+  4. Run test attacks from Kali
+  5. Verify alerts in Wazuh Dashboard > Security Events
+  
+  CUSTOM DECODERS (if needed):
+  Add to /var/ossec/etc/decoders/local_decoder.xml:
+  
+  <decoder name="suricata-json">
+    <program_name>suricata</program_name>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+  </decoder>
+-->
