@@ -1,172 +1,98 @@
-# Cloud Security Project - Complete Implementation Package
+# OCP SOC Lab - Attack Simulation
 
-## Quick Start
+Run **only** from the Kali node, **only** against your own lab VMs (10.0.3.10/.11/.12).
+The script has a hardcoded guardrail (`ALLOWED_LAB_NETWORKS`) that refuses to run
+against any IP outside `10.0.0.0/16`.
 
-This package contains everything needed to complete your cloud security internship project across 4 phases.
+## What it does
 
-### What's Included
+| Phase | Tool | Action | What Suricata/Wazuh should show |
+|---|---|---|---|
+| 1. Recon | `nmap` | Service/version scan of port 22 on each VM | Suricata: port-scan / nmap signature alerts |
+| 2. Brute force | `hydra` | Tries 5 users x 6 weak passwords over SSH | Wazuh: repeated `sshd` auth failure events, possible active-response/Fail2ban-style trigger if configured |
+| 3. Unauthorized access | `sshpass` + `ssh` | Logs in with any cracked (or known weak) credential, runs `id; whoami; uname -a; w` | Wazuh: successful login event right after failures = classic brute-force-then-compromise pattern; Suricata may flag anomalous SSH session length/behavior |
+| 4. DoS / flood | `hping3` | SYN flood against port 22, spoofed source IPs, for N seconds | Suricata: flood/DDoS signature, high connection-rate alert |
 
-```
-cloud-security-project/
-├── phase1-siem-validation/          # SIEM testing with Kali Linux
-│   ├── attack-scripts/              # Ready-to-run attack scripts
-│   │   ├── 01-reconnaissance-scans.sh
-│   │   ├── 02-brute-force-attacks.sh
-│   │   ├── 03-web-application-attacks.sh
-│   │   ├── 04-payloads-and-exploits.sh
-│   │   ├── run-all-attacks.sh       # Master attack launcher
-│   │   └── verify-detection.sh      # Wazuh alert verification
-│   ├── detection-matrix/
-│   │   └── matrix-template.md       # Fill during testing
-│   └── wazuh-custom-rules/
-│       └── local_rules.xml          # Enhanced detection rules
-│
-├── phase2-ocp-webapp/               # OCP PHP Web Application
-│   ├── app/                         # Full PHP source code
-│   │   ├── config/config.php
-│   │   ├── public/                  # Web root
-│   │   ├── src/
-│   │   │   ├── utils/               # Database, Auth, Security, Logger
-│   │   │   └── views/               # Login, Dashboard
-│   │   └── ...
-│   ├── database/schema.sql          # MySQL schema + seed data
-│   └── azure-deploy/
-│       └── azure-deploy.sh          # One-command Azure deployment
-│
-├── phase3-custom-domain/            # Custom domain + SSL
-│   ├── nginx-configs/
-│   │   └── wazuh-dashboard-proxy.conf
-│   ├── ssl-scripts/
-│   │   └── setup-ssl.sh             # Let's Encrypt automation
-│   └── dns-records/
-│       └── template.md              # DNS configuration guide
-│
-├── phase4-vault-pam/                # HashiCorp Vault PAM
-│   ├── vault-config/
-│   │   └── install-vault.sh         # Vault installation + config
-│   └── app-integration/
-│       └── vault-client.php         # PHP Vault client for OCP
-│
-└── docs/
-    └── project-master-guide.md      # Complete implementation guide
-```
+All 4 phases write to `logs/attack_sim_<timestamp>.log` (human-readable) and
+`logs/attack_sim_report_<timestamp>.json` (structured, with UTC timestamps you
+can line up against `eve.json` and the Wazuh dashboard timeline).
 
-## Execution Order
-
-### Phase 1: Validate SIEM (Start Here)
+## Setup on Kali
 
 ```bash
-# On Kali Linux:
-
-# 1. Update IP addresses in scripts:
-nano phase1-siem-validation/attack-scripts/01-reconnaissance-scans.sh
-
-# 2. Make scripts executable:
-chmod +x phase1-siem-validation/attack-scripts/*.sh
-
-# 3. Run all attacks:
-cd phase1-siem-validation/attack-scripts
-sudo ./run-all-attacks.sh
-
-# 4. Verify detections on Wazuh server:
-scp verify-detection.sh wazuh-server:/tmp/
-ssh wazuh-server "sudo bash /tmp/verify-detection.sh"
-
-# 5. Fill detection matrix:
-nano phase1-siem-validation/detection-matrix/matrix-template.md
-
-# 6. Install custom rules on Wazuh server:
-scp wazuh-custom-rules/local_rules.xml wazuh-server:/tmp/
-ssh wazuh-server "sudo cp /tmp/local_rules.xml /var/ossec/etc/rules/ && sudo systemctl restart wazuh-manager"
+sudo apt update
+sudo apt install -y nmap hydra hping3 sshpass
 ```
 
-### Phase 2: Deploy OCP Web App
+## Usage
 
 ```bash
-# Prerequisites: Azure CLI installed, logged in (az login)
+# Full run, all 3 default VMs, all 4 phases
+sudo python3 ocp_attack_sim.py
 
-# 1. Deploy to Azure:
-cd phase2-ocp-webapp/azure-deploy
-chmod +x azure-deploy.sh
-./azure-deploy.sh
+# Only specific targets
+sudo python3 ocp_attack_sim.py --targets 10.0.3.10 10.0.3.11
 
-# 2. Note the generated app URL and credentials
+# Skip the SYN flood (e.g. first pass, just recon+bruteforce+access)
+python3 ocp_attack_sim.py --skip-flood
 
-# 3. Test:
-curl https://<app-name>.azurewebsites.net
-# Login: admin / Admin@OCP2024!
+# Shorter flood, more delay between phases for cleaner log reading
+sudo python3 ocp_attack_sim.py --flood-duration 10 --delay 8
 ```
 
-### Phase 3: Configure Custom Domain
+`sudo` is only strictly required for phase 4 (`hping3` needs raw sockets).
+Phases 1-3 work fine unprivileged.
+
+## Why these choices
+
+- **Weak creds are tiny and obvious on purpose** (`root/toor`, `admin/admin123`, etc.) —
+  this is a detection demo, not a real cracking tool. Set these up as actual
+  low-privilege test accounts on your lab VMs beforehand if they don't already
+  exist, or hydra will just report "no valid credentials" (which is itself a
+  valid, loggable result — Wazuh will show pure auth-failure floods).
+- **`-f` flag on hydra** stops at the first valid pair so the brute-force phase
+  doesn't run indefinitely once it succeeds.
+- **No custom exploit/payload code.** Everything is a wrapper call to
+  industry-standard tools your professors/evaluators will recognize: nmap,
+  hydra, hping3. This keeps the project legitimate and easy to explain in your
+  report.
+- **`--rand-source` on hping3** simulates spoofed-source flood traffic, which is
+  the classic pattern Suricata DDoS rulesets are tuned to catch — good for
+  showing a clean alert in your screenshots.
+
+## Correlating results
+
+On the Security Server VM (Wazuh + Suricata):
 
 ```bash
-# On Wazuh server (Ubuntu VM in Azure):
+# Suricata - tail alerts live while the script runs
+sudo tail -f /var/log/suricata/eve.json | jq 'select(.event_type=="alert")'
 
-# 1. Install nginx and certbot:
-sudo apt update && sudo apt install -y nginx certbot python3-certbot-nginx
-
-# 2. Configure nginx proxy:
-sudo cp phase3-custom-domain/nginx-configs/wazuh-dashboard-proxy.conf \
-     /etc/nginx/sites-available/wazuh
-sudo ln -s /etc/nginx/sites-available/wazuh /etc/nginx/sites-enabled/
-
-# 3. Setup SSL:
-cd phase3-custom-domain/ssl-scripts
-chmod +x setup-ssl.sh
-sudo ./setup-ssl.sh yourdomain.com your-email@example.com
-
-# 4. Configure Azure App Service domain in Azure Portal
+# Or filtered to alerts only
+sudo jq 'select(.event_type=="alert") | {timestamp, src_ip, dest_ip, alert: .alert.signature}' /var/log/suricata/eve.json
 ```
 
-### Phase 4: Deploy Vault PAM
+In the Wazuh dashboard:
+- **Security Events** → filter by `agent.name` for the target VM and the time
+  window from your run's JSON report.
+- Look for `sshd` authentication failure rule IDs in a tight burst (brute force),
+  followed by a successful login from the same source IP (unauthorized access).
+- For the flood phase, check **Suricata module** alerts in Wazuh, or cross-reference
+  directly in the Suricata `eve.json` since high-volume floods can also show up
+  as a spike in Wazuh's own agent/manager connection stats if it overlaps the
+  agent's reporting port — keep the flood targeted at 22 only, not 1514, to avoid
+  knocking out the Wazuh agent channel itself mid-test.
 
-```bash
-# On dedicated Ubuntu VM (or existing Wazuh server):
+## Suggested report structure (for your internship writeup)
 
-# 1. Install Vault:
-cd phase4-vault-pam/vault-config
-chmod +x install-vault.sh
-sudo ./install-vault.sh
-
-# 2. Save the unseal keys and root token securely!
-
-# 3. Configure OCP app to use Vault:
-#    In Azure Portal > App Service > Configuration:
-#    VAULT_ENABLED = true
-#    VAULT_ADDR = https://vault.yourdomain.com:8200
-#    VAULT_ROLE_ID = <from installation output>
-#    VAULT_SECRET_ID = <from installation output>
-
-# 4. Copy vault-client.php to OCP app:
-#    phase4-vault-pam/app-integration/vault-client.php -> app/src/utils/
-```
-
-## Critical Configuration Checklist
-
-Before running anything, update these values throughout the project:
-
-| File | Setting | Description |
-|------|---------|-------------|
-| All attack scripts | `DEBIAN_IP`, `UBUNTU_IP`, `WINDOWS_IP` | Your VM IP addresses |
-| `config/config.php` | `DB_HOST`, `DB_USER`, `DB_PASS` | Azure MySQL credentials |
-| `config/config.php` | `VAULT_ADDR`, `VAULT_ROLE_ID` | After Vault installation |
-| `azure-deploy.sh` | `RESOURCE_GROUP`, `LOCATION` | Your Azure preferences |
-| `setup-ssl.sh` | `DOMAIN` | Your registered domain |
-| `install-vault.sh` | `DOMAIN` | Your registered domain |
-| `wazuh-dashboard-proxy.conf` | `server_name` | Your wazuh subdomain |
-| `vault.hcl` (generated) | `api_addr`, `cluster_addr` | Vault domain |
-
-## Important Notes
-
-- **Default passwords must be changed immediately after deployment**
-- The OCP app includes intentionally vulnerable endpoints (`/api/execute.php`, `/api/ping.php`) for security testing - do not expose these in production without proper controls
-- Vault unseal keys are critical - store them securely offline
-- Keep `db-credentials.txt` and `vault-init-backup.json` secure with `chmod 600`
-
-## Support
-
-For detailed instructions, refer to `docs/project-master-guide.md`.
-
----
-
-*Generated for Cloud Security Internship Project*
+1. Architecture diagram (you already have this).
+2. Attack methodology table (the one above).
+3. Suricata alert screenshots per phase, with timestamps.
+4. Wazuh dashboard screenshots: auth failures → successful login correlation.
+5. MITRE ATT&CK mapping (optional but examiners like it):
+   - Recon → `T1046` Network Service Discovery
+   - Brute force → `T1110.001` Password Guessing
+   - Unauthorized access → `T1078` Valid Accounts
+   - SYN flood → `T1498.001` Direct Network Flood
+6. Recommendations (rate limiting, fail2ban/active-response, NSG tightening,
+   MFA on SSH, Suricata rule tuning thresholds).
